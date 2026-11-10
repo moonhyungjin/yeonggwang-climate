@@ -7,6 +7,10 @@ type Day={date:string,temp:number|null,rain:number|null,sunshine:number|null,nor
 type Result={station:string,period:{start:string,end:string},baseline:string,days:Day[],summary:{temp:number|null,normalTemp:number|null,rain:number|null,normalRain:number|null,sunshine:number|null,normalSunshine:number|null},warnings:string[]};
 
 const fmt=(n:number|null,d=1)=>n===null?"—":n.toFixed(d);
+// 로컬 날짜를 YYYY-MM-DD로 (toISOString은 UTC라 KST에서 하루 밀림)
+const toYmd=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+// 기본 기간: 어제(일자료는 다음 날 제공)까지 최근 한 달
+function defaultRange(){const end=new Date();end.setDate(end.getDate()-1);const prevMonthDays=new Date(end.getFullYear(),end.getMonth(),0).getDate();const start=new Date(end.getFullYear(),end.getMonth()-1,Math.min(end.getDate(),prevMonthDays));start.setDate(start.getDate()+1);return {start:toYmd(start),end:toYmd(end)}}
 function delta(a:number|null,b:number|null){return a===null||b===null?null:a-b}
 function Card({label,value,unit,normal,icon:Icon,precision=1}:{label:string,value:number|null,unit:string,normal:number|null,icon:any,precision?:number}){
  const d=delta(value,normal);
@@ -16,7 +20,7 @@ function Card({label,value,unit,normal,icon:Icon,precision=1}:{label:string,valu
  return <div className="metric"><div className="metric-head"><span>{label}</span><Icon size={18}/></div><div className="metric-value">{fmt(value,precision)}<small>{unit}</small></div><div className="metric-foot">평년 {fmt(normal,precision)}{unit} <b className={d===null?"":d>0?"up":d<0?"down":""}>{d===null?"비교 불가":`${sign(d)}${fmt(d,precision)}${unit}`}{pct!==null&&` (${sign(pct)}${pct.toFixed(1)}%)`}</b></div></div>
 }
 export default function Home(){
- const [start,setStart]=useState("2026-04-01"),[end,setEnd]=useState("2026-04-30"),[data,setData]=useState<Result|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState("");
+ const [start,setStart]=useState(()=>defaultRange().start),[end,setEnd]=useState(()=>defaultRange().end),[data,setData]=useState<Result|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState("");
  async function load(){setBusy(true);setError("");try{const r=await fetch(`/api/climate?start=${start}&end=${end}`);const j=await r.json();if(!r.ok)throw new Error(j.error||"조회 실패");setData(j)}catch(e:any){setError(e.message)}finally{setBusy(false)}}
  function csv(){if(!data)return;const rows=[["날짜","평균기온","평년기온","강수량","평년강수량","일조시간","평년일조시간"],...data.days.map(d=>[d.date,d.temp??"",d.normalTemp??"",d.rain??"",d.normalRain??"",d.sunshine??"",d.normalSunshine??""])];const blob=new Blob(["\ufeff"+rows.map(r=>r.join(",")).join("\n")],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`영광군_기후비교_${start}_${end}.csv`;a.click();URL.revokeObjectURL(a.href)}
  const chart=data?.days.map(d=>({date:d.date.slice(5),실제기온:d.temp,평년기온:d.normalTemp,실제강수량:d.rain,평년강수량:d.normalRain,실제일조:d.sunshine,평년일조:d.normalSunshine}))||[];
