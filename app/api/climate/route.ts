@@ -6,7 +6,7 @@ const BASE = "https://apihub.kma.go.kr/api/typ01/url/";
 const STATION = "252"; // 영광 ASOS
 const BASELINE = "2021"; // 1991~2020 평년 (영광은 이전 평년값이 제공되지 않음)
 
-type Obs = { temp: number | null; rain: number | null; sunshine: number | null };
+type Obs = { temp: number | null; tempMax: number | null; tempMin: number | null; rain: number | null; sunshine: number | null };
 
 async function kma(path: string, params: Record<string, string>) {
   const key = process.env.KMA_API_KEY;
@@ -32,7 +32,7 @@ const num = (s: string | undefined) => {
   return s !== undefined && s !== "" && Number.isFinite(n) ? n : null;
 };
 
-// kma_sfcdd3: 공백 구분, 고정 컬럼 순서 (0: YYMMDD, 10: TA_AVG, 32: SS_DAY, 38: RN_DAY)
+// kma_sfcdd3: 공백 구분, 고정 컬럼 순서 (0: YYMMDD, 10: TA_AVG, 11: TA_MAX, 13: TA_MIN, 32: SS_DAY, 38: RN_DAY)
 // 결측: 기온 -99.0, 일조 -9.0 / 강수 -9.0 은 "강수 없음"
 function parseObs(raw: string) {
   const map = new Map<string, Obs>();
@@ -40,13 +40,14 @@ function parseObs(raw: string) {
     const c = line.split(/\s+/);
     if (!/^\d{8}$/.test(c[0])) continue;
     const date = `${c[0].slice(0, 4)}-${c[0].slice(4, 6)}-${c[0].slice(6, 8)}`;
-    const ta = num(c[10]), ss = num(c[32]), rn = num(c[38]);
-    const temp = ta !== null && ta > -50 ? ta : null;
+    const ta = num(c[10]), tx = num(c[11]), tn = num(c[13]), ss = num(c[32]), rn = num(c[38]);
+    const okTemp = (n: number | null) => (n !== null && n > -50 ? n : null);
+    const temp = okTemp(ta), tempMax = okTemp(tx), tempMin = okTemp(tn);
     const sunshine = ss !== null && ss >= 0 ? ss : null;
     // 기온·일조가 모두 결측이면 장비 결측일로 보고 강수도 결측 처리
     const rowMissing = temp === null && sunshine === null;
     const rain = rn !== null && rn >= 0 ? rn : rowMissing ? null : 0;
-    map.set(date, { temp, rain, sunshine });
+    map.set(date, { temp, tempMax, tempMin, rain, sunshine });
   }
   return map;
 }
@@ -60,7 +61,10 @@ function parseNormal(raw: string) {
     const mm = num(c[2]), dd = num(c[3]);
     if (mm === null || dd === null || dd > 31) continue;
     const key = `${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
-    map.set(key, { temp: ok(num(c[4])), rain: ok(num(c[7])), sunshine: ok(num(c[12])) });
+    map.set(key, {
+      temp: ok(num(c[4])), tempMax: ok(num(c[5])), tempMin: ok(num(c[6])),
+      rain: ok(num(c[7])), sunshine: ok(num(c[12])),
+    });
   }
   return map;
 }
@@ -81,6 +85,18 @@ const ymd = (s: string) => s.replaceAll("-", "");
 const valid = (a: (number | null)[]) => a.filter((x): x is number => x !== null);
 const avg = (a: (number | null)[]) => { const v = valid(a); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
 const sum = (a: (number | null)[]) => { const v = valid(a); return v.length ? v.reduce((s, x) => s + x, 0) : null; };
+
+// 기간 중 극값: 같은 값이면 먼저 나온 날짜. normal은 그날의 평년값
+function extreme<T extends { date: string }>(days: T[], value: (d: T) => number | null, normal: (d: T) => number | null, pick: "max" | "min") {
+  let best: T | null = null;
+  for (const d of days) {
+    const v = value(d);
+    if (v === null) continue;
+    const b = best ? value(best)! : null;
+    if (b === null || (pick === "max" ? v > b : v < b)) best = d;
+  }
+  return best ? { value: value(best), date: best.date, normal: normal(best) } : { value: null, date: null, normal: null };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -105,22 +121,27 @@ export async function GET(req: NextRequest) {
       const o = obs.get(date), n = norm.get(date.slice(5));
       return {
         date,
-        temp: o?.temp ?? null, rain: o?.rain ?? null, sunshine: o?.sunshine ?? null,
-        normalTemp: n?.temp ?? null, normalRain: n?.rain ?? null, normalSunshine: n?.sunshine ?? null,
+        temp: o?.temp ?? null, tempMax: o?.tempMax ?? null, tempMin: o?.tempMin ?? null,
+        rain: o?.rain ?? null, sunshine: o?.sunshine ?? null,
+        normalTemp: n?.temp ?? null, normalTempMax: n?.tempMax ?? null, normalTempMin: n?.tempMin ?? null,
+        normalRain: n?.rain ?? null, normalSunshine: n?.sunshine ?? null,
       };
     });
 
     const missing = {
       temp: days.filter((d) => d.temp === null).length,
+      tempMax: days.filter((d) => d.tempMax === null).length,
+      tempMin: days.filter((d) => d.tempMin === null).length,
       rain: days.filter((d) => d.rain === null).length,
       sunshine: days.filter((d) => d.sunshine === null).length,
     };
     const warnings: string[] = [];
     if (obs.size === 0) warnings.push("해당 기간의 관측 자료가 없습니다. 일자료는 보통 다음 날 이후에 제공됩니다.");
-    else if (missing.temp || missing.rain || missing.sunshine)
+    else if (missing.temp || missing.tempMax || missing.tempMin || missing.rain || missing.sunshine)
       warnings.push(
-        `관측 결측: 기온 ${missing.temp}일, 강수 ${missing.rain}일, 일조 ${missing.sunshine}일. ` +
-        "결측일은 평균·합계에서 제외했으므로 누적값이 평년보다 작게 보일 수 있습니다."
+        `관측 결측: 평균기온 ${missing.temp}일, 최고기온 ${missing.tempMax}일, 최저기온 ${missing.tempMin}일, ` +
+        `강수 ${missing.rain}일, 일조 ${missing.sunshine}일. ` +
+        "결측일은 평균·합계·극값에서 제외했으므로 누적값이 평년보다 작게 보일 수 있습니다."
       );
     if (norm.size === 0) warnings.push("평년값을 읽지 못했습니다.");
 
@@ -131,6 +152,8 @@ export async function GET(req: NextRequest) {
       days,
       summary: {
         temp: avg(days.map((d) => d.temp)), normalTemp: avg(days.map((d) => d.normalTemp)),
+        tempMax: extreme(days, (d) => d.tempMax, (d) => d.normalTempMax, "max"),
+        tempMin: extreme(days, (d) => d.tempMin, (d) => d.normalTempMin, "min"),
         rain: sum(days.map((d) => d.rain)), normalRain: sum(days.map((d) => d.normalRain)),
         sunshine: sum(days.map((d) => d.sunshine)), normalSunshine: sum(days.map((d) => d.normalSunshine)),
       },
