@@ -69,6 +69,25 @@ function parseNormal(raw: string) {
   return map;
 }
 
+// sfc_norm1 norm=M: CSV  "ST,STN,MM,TA,...,RD_01,RD_10,..."  RD_01/RD_10 = 0.1mm/1.0mm 이상 강수일수
+// 일별·순별 평년값에는 강수일수가 없어 월별 평년값을 쓴다. 컬럼 위치는 헤더 주석에서 찾는다
+type RainDayNormal = { rd01: number | null; rd10: number | null };
+function parseMonthlyRainDays(raw: string) {
+  const header = raw.split(/\r?\n/).find((l) => /^#\s*ST,/.test(l));
+  const cols = header ? header.replace(/^#/, "").split(",").map((x) => x.trim()) : [];
+  const i01 = cols.indexOf("RD_01"), i10 = cols.indexOf("RD_10"), iMM = cols.indexOf("MM");
+  const map = new Map<number, RainDayNormal>();
+  if (i01 < 0 || i10 < 0 || iMM < 0) return map;
+  const ok = (n: number | null) => (n !== null && n > -90 ? n : null);
+  for (const line of dataLines(raw)) {
+    const c = line.split(",").map((x) => x.trim());
+    const mm = num(c[iMM]);
+    if (mm === null || mm < 1 || mm > 12) continue;
+    map.set(mm, { rd01: ok(num(c[i01])), rd10: ok(num(c[i10])) });
+  }
+  return map;
+}
+
 // 시간대 영향 없이 UTC 기준으로 날짜 나열
 function dateRange(start: string, end: string) {
   const out: string[] = [];
@@ -110,12 +129,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "한 번에 최대 366일까지만 조회할 수 있습니다." }, { status: 400 });
 
     // 평년값은 1년치를 한 번에 받아 MM-DD로 매칭 (해를 넘기는 기간도 처리됨)
-    const [obsRaw, normRaw] = await Promise.all([
+    const [obsRaw, normRaw, monthRaw] = await Promise.all([
       kma("kma_sfcdd3.php", { stn: STATION, tm1: ymd(start), tm2: ymd(end) }),
       kma("sfc_norm1.php", { stn: STATION, norm: "D", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }),
+      kma("sfc_norm1.php", { stn: STATION, norm: "M", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }),
     ]);
     const obs = parseObs(obsRaw);
     const norm = parseNormal(normRaw);
+    const monthRainDays = parseMonthlyRainDays(monthRaw);
 
     const days = dates.map((date) => {
       const o = obs.get(date), n = norm.get(date.slice(5));
@@ -145,6 +166,20 @@ export async function GET(req: NextRequest) {
       );
     if (norm.size === 0) warnings.push("평년값을 읽지 못했습니다.");
 
+    // 강우일수: 관측은 일강수량 기준(결측일 제외), 평년은 월별 평년 일수 × (기간 내 그 달 일수 / 그 달 전체 일수)
+    const rainy = (min: number) => obs.size === 0 ? null : days.filter((d) => d.rain !== null && d.rain >= min).length;
+    const normalRainDays = (k: keyof RainDayNormal) => {
+      let total = 0;
+      for (const d of days) {
+        const y = Number(d.date.slice(0, 4)), m = Number(d.date.slice(5, 7));
+        const v = monthRainDays.get(m)?.[k];
+        if (v === null || v === undefined) return null;
+        total += v / new Date(Date.UTC(y, m, 0)).getUTCDate();
+      }
+      return total;
+    };
+    if (monthRainDays.size === 0) warnings.push("월별 평년 강수일수를 읽지 못했습니다.");
+
     return NextResponse.json({
       station: "영광(252)",
       period: { start, end },
@@ -156,6 +191,8 @@ export async function GET(req: NextRequest) {
         tempMin: extreme(days, (d) => d.tempMin, (d) => d.normalTempMin, "min"),
         rain: sum(days.map((d) => d.rain)), normalRain: sum(days.map((d) => d.normalRain)),
         sunshine: sum(days.map((d) => d.sunshine)), normalSunshine: sum(days.map((d) => d.normalSunshine)),
+        rainDays01: rainy(0.1), normalRainDays01: normalRainDays("rd01"),
+        rainDays10: rainy(1.0), normalRainDays10: normalRainDays("rd10"),
       },
       missing,
       warnings,
