@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "exceljs": "^4.4.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.468.0",
     "next": "14.2.15",
+    "pdfjs-dist": "^3.11.174",
     "react": "^18",
     "react-dom": "^18",
     "recharts": "^2.13.3"
