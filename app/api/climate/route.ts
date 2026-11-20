@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30; // Vercel 함수 제한 시간(초): 기상청 재시도(최대 3 × 8초)를 담을 수 있게
 
 import { kma, dataLines, num, parseObs, STATION, BASELINE, type Obs } from "@/lib/kma";
 

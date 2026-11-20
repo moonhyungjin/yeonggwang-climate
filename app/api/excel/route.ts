@@ -4,6 +4,7 @@ import { fillTemplate, TEMPLATES, type TemplateKind } from "@/lib/excel";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60; // 여러 해를 나눠 받고 재시도까지 하므로 넉넉하게
 
 const MAX_DAYS = 3660; // 엑셀 채우기는 최대 10년
 

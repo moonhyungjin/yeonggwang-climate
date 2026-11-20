@@ -1,6 +1,8 @@
 const BASE = "https://apihub.kma.go.kr/api/typ01/url/";
 export const STATION = "252"; // 영광 ASOS
 export const BASELINE = "2021"; // 1991~2020 평년 (영광은 이전 평년값이 제공되지 않음)
+const TIMEOUT_MS = 8000;
+const MAX_ATTEMPTS = 3;
 
 export type Obs = { temp: number | null; tempMax: number | null; tempMin: number | null; rain: number | null; sunshine: number | null };
 
@@ -9,15 +11,32 @@ export async function kma(path: string, params: Record<string, string>) {
   if (!key) throw new Error("서버 환경변수 KMA_API_KEY가 설정되지 않았습니다. .env.local에 API 키를 입력해 주세요.");
   const u = new URL(BASE + path);
   Object.entries({ ...params, help: "0", authKey: key }).forEach(([k, v]) => u.searchParams.set(k, v));
-  const res = await fetch(u, { cache: "no-store" });
-  const body = await res.text();
-  // 오류는 JSON({"result":{status,message}})으로 온다
-  if (!res.ok || body.trimStart().startsWith("{")) {
-    let msg = body.slice(0, 200);
-    try { msg = JSON.parse(body).result?.message ?? msg; } catch {}
-    throw new Error(`기상청 API 오류 (${path}, ${res.status}): ${msg}`);
+
+  // 기상청 서버가 간헐적으로 30초간 멈춘 뒤 504를 준다. 정상 응답은 1초 안팎이므로
+  // 8초 안에 응답이 없거나 5xx면 다시 시도한다 (최대 3번).
+  let lastError = "";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(u, { cache: "no-store", signal: AbortSignal.timeout(TIMEOUT_MS) });
+    } catch {
+      lastError = `${TIMEOUT_MS / 1000}초 안에 응답이 없습니다`;
+      continue;
+    }
+    const body = await res.text();
+    if (res.status >= 500) {
+      lastError = `서버 오류 ${res.status}`;
+      continue;
+    }
+    // 그 밖의 오류(인증·활용신청 등)는 JSON({"result":{status,message}})으로 오며, 재시도해도 같으므로 바로 알린다
+    if (!res.ok || body.trimStart().startsWith("{")) {
+      let msg = body.slice(0, 200);
+      try { msg = JSON.parse(body).result?.message ?? msg; } catch {}
+      throw new Error(`기상청 API 오류 (${path}, ${res.status}): ${msg}`);
+    }
+    return body;
   }
-  return body;
+  throw new Error(`기상청 서버가 응답하지 않습니다 (${path}, ${MAX_ATTEMPTS}번 시도: ${lastError}). 잠시 후 다시 조회해 주세요.`);
 }
 
 export const dataLines = (raw: string) =>
