@@ -101,11 +101,44 @@
 .seg button{border:0;background:#fff;padding:2px 12px;font:inherit;font-size:11.5px;color:#6f8088;cursor:pointer}
 .seg button+button{border-left:1px solid #cfd8dc}
 .seg button.on{background:#304b57;color:#fff;font-weight:600}
-/* 문서와 같은 부분별 글꼴: 제목·□·사업개요는 명조, 표·산출근거는 맑은 고딕 */
-.bpreview{--myeongjo:"휴먼명조","HCR Batang","함초롬바탕","바탕",Batang,serif;--gothic:"맑은 고딕","Malgun Gothic",sans-serif}
-.bp-type,.bp-title,.bpreview h4,.bp-ov,.bp-ov .dtxt,.bp-ov .dinline,.bp-type .dinline{font-family:var(--myeongjo)}
-.bp-type{font-weight:700;font-size:14px;color:#26343d}
-.bp-ov{font-size:13.5px}
-.bp-head,.bp-head .dtxt,.bp-table,.dcellin,.bp-box,.bp-box .dtxt{font-family:var(--gothic)}
-.bp-box .bp-stat-head{font-size:13px;font-weight:700}
-.bp-box .bp-req,.bp-box .bp-calc-label,.bp-box .bp-lines,.bp-box .dtxt{font-size:12.5px}
+.dold{font-size:11px;color:#9aa6ab}
+.dtxt.stale{background:#fdf3ea;border-color:#efc9a4}
+/* 계약서 도우미 */
+.contract-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;align-items:start}
+.contract-grid>.panel{padding:20px 22px}
+.bfield input.need{background:#fff8e6;border-color:#f0d58c}
+.ctag{font-size:10.5px;color:#4f7c8c;background:#eef5f7;border-radius:10px;padding:1px 8px}
+.csel{margin-left:10px;font:inherit;font-size:12px;font-weight:400;border:1px solid #dfe6e8;border-radius:7px;padding:3px 6px;color:#34464f;background:#fff}
+.cchecks{display:flex;flex-direction:column;gap:5px;font-size:12.5px;color:#34464f}
+.cchecks label{display:flex;gap:7px;align-items:center;cursor:pointer}
+.cchanges th{white-space:nowrap;width:1%}
+.cchanges td{text-align:left;white-space:pre-wrap;word-break:keep-all}
+.cchanges tr.same td{color:#9aa6ab}
+.cchanges tr.miss td{color:#c0763a}
+@media(max-width:900px){.contract-grid{grid-template-columns:1fr}}
+/* 계약서: 문서 모양 입력 */
+.cdoc-title{font-size:20px;font-weight:800;letter-spacing:6px;text-align:center;margin:6px 0 12px}
+.cform th{white-space:nowrap;width:1%}
+.cform td{text-align:left;vertical-align:middle}
+.cform .cvert{line-height:1.35}
+.cfixed small,.cmuted{color:#9aa6ab;font-size:11px}
+.crow{display:flex;gap:6px;align-items:flex-start;margin:3px 0}
+.crow>span:first-child{white-space:nowrap;padding-top:4px;flex:none}
+.cmoney{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cmoney-in{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}
+.cmoney .dcellin{width:9.5em}
+.cmoney .dcellin.crate{width:3.2em;text-align:center}
+.dcellin.cdate{width:11em;text-align:left}
+.cpara{color:#586a73;font-size:12px;margin:12px 0 6px}
+.cdate-line{display:flex;gap:10px;align-items:center;justify-content:center;margin:6px 0 10px}
+.csign{display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:12.5px;color:#34464f}
+.cbox{display:inline-flex;gap:14px;flex-wrap:wrap}
+.cbox button{border:0;background:none;padding:2px 0;font:inherit;font-size:13px;color:#6f8088;cursor:pointer}
+.cbox button.on{color:#26343d;font-weight:700}
+.cbox button:disabled{cursor:default}
+.bpreview.editing .cbox button:not(:disabled):hover{color:#1f6f8b}
+.cempty{color:#b5c0c4}
+.cchecks input[type=checkbox]{width:auto;flex:none;margin:0}
+.bfield .seg{align-self:flex-start}
+.cdoc .cchecks{padding:4px 2px}
+.crow .dtxt{flex:1}

@@ -334,7 +334,7 @@ export function renderSection(t: HwpxTemplate, items: ExportItem[], year: number
     mapCells(preTbl, (tc, r, c) => { labels.set(`${r},${c}`, flat(textOf(tc))); return tc; });
     const pre = mapCells(preTbl, (tc, r, c) => {
       const key = labels.get(`${r},${c - 1}`);
-      return key && (PREREQ_KEYS as string[]).includes(key) ? setCell(tc, [m?.prereq?.[key as keyof MasterInfo["prereq"]] || "비대상"]) : tc;
+      return key && (PREREQ_KEYS as string[]).includes(key) ? setCell(tc, [m?.prereq?.[key as keyof MasterInfo["prereq"]] ?? (key === "중기재정계획" ? "" : "비대상")]) /* 값이 없으면 비대상. ""는 입력 안 된 칸(연도가 바뀌어 비운 날짜 등)이라 빈칸. 중기재정계획은 기본값 없음 */ : tc;
     });
     out.push(t.preHeadP, t.preP.replace(preTbl, pre), t.blankP);
 

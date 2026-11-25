@@ -60,6 +60,9 @@ export function parseHwpxLines(lines: string[]): ImportedProject[] {
     const m: ImportedProject = { ...emptyMaster(fullName), titleName };
     m.type = typeLine ? typeLine.slice(1, -1) : "단년·반복사업";
     m.org = orgLine.replace(/^조\s*직\s*:\s*/, "").trim();
+    // 몇 년도 예산 설명서인지: 투자계획 머리글의 첫 "YYYY년 …예산액"(a)
+    const ya = block.map((l) => l.match(/(\d{4})년\s*(?:최종)?\s*예산액/)).find(Boolean);
+    if (ya) { m.dataYear = +ya[1]; m.reqYear = +ya[1]; }
 
     // □ 사업개요
     const iOv = block.findIndex((l) => /^□\s*사업\s*개요/.test(l));

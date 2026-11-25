@@ -52,10 +52,17 @@ export type MasterInfo = {
   notes: string; // ※ 비고 (감액 사유 등)
   prevFunds: Partial<Record<"국비" | "시비" | "군비" | "기타", string>>; // 전년도 재원별 금액(백만원), PDF에 없음
   calcStyle?: Record<string, "text" | "table">; // 통계목명(공백 제거) → 산출근거 형식. 없으면 글
+  // 해마다 바뀌는 값(사업기간·전년도 재원별 금액·사전절차 날짜·※ 비고)이 몇 년도 예산 것인지. 다른 연도 PDF에서는 쓰지 않는다
+  dataYear?: number;
+  reqYear?: number; // ▶(요구) 문구를 몇 년도 예산용으로 확인했는지
+  archive?: YearlyValues; // 연도가 바뀌어 비운 작년 값 (참고용으로만 보여 줌)
   updatedAt: string;
 };
 
-export const emptyMaster = (name: string): MasterInfo => ({
+/** 해마다 바뀌는 값 묶음 */
+export type YearlyValues = { year: number; period: string; prevFunds: MasterInfo["prevFunds"]; prereq: MasterInfo["prereq"]; notes: string }; // prereq: 날짜로 된 사전절차 값만
+
+export const emptyMaster =(name: string): MasterInfo => ({
   name, type: "단년·반복사업", org: "", basis: "", purpose: "", period: "", content: "", target: "",
   supportForm: "", subsidyRate: "", prereq: {}, requests: {}, notes: "", prevFunds: {}, calcStyle: {}, updatedAt: "",
 });

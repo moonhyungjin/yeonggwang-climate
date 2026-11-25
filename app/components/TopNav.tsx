@@ -1,11 +1,12 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CloudSun, FileText } from "lucide-react";
+import { CloudSun, FileSignature, FileText } from "lucide-react";
 
 const MENU = [
   { href: "/", label: "기후 리포트", icon: CloudSun },
   { href: "/budget", label: "세부사업설명서", icon: FileText },
+  { href: "/contract", label: "계약서", icon: FileSignature },
 ];
 
 export default function TopNav() {

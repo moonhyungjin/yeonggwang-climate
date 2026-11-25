@@ -1,17 +1,21 @@
 "use client";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import Txt from "@/app/components/Txt";
 import { AlertTriangle, CheckCircle2, Download, FileDown, FileText, FileUp, Info, RefreshCw, Search, Upload, Wand2 } from "lucide-react";
 import { emptyMaster, normName, PREREQ_KEYS, type BudgetDoc, type MasterInfo, type Project } from "@/lib/budget/types";
 import { validateProject } from "@/lib/budget/parsePdf";
 import { calcRows, calcStyleOf, calcTextLines, defaultPeriod, investRows, mil, needsPrevFunds, overviewItems, reqFor, statChangeText, statsOf, suggestSubsidyRate, suggestSupportForm, won } from "@/lib/budget/derive";
 import { exportJson, findMaster, loadStore, parseBackup, saveStore, type MasterStore } from "@/lib/budget/store";
+import { applyEdit, forYear, MID_PLAN, type YearView } from "@/lib/budget/yearly";
+import { loadTemplate, saveTemplate } from "@/lib/budget/templateStore";
 
 const EXCLUDE = /행정운영경비/; // 세부사업설명서에 넣지 않는 정책사업
 const REQUIRED: [keyof MasterInfo, string][] = [["org", "조직"], ["basis", "지원근거"], ["purpose", "사업목적"]];
 
-function statusOf(p: Project, m: MasterInfo | null) {
+function statusOf(p: Project, v: YearView) {
   if (validateProject(p).length) return "error" as const;
-  if (!m || REQUIRED.some(([k]) => !m[k]) || needsPrevFunds(p, m)) return "todo" as const;
+  const m = v.m;
+  if (!m || REQUIRED.some(([k]) => !m[k]) || needsPrevFunds(p, m) || !m.prereq?.[MID_PLAN] || Object.values(m.prereq ?? {}).some((x) => x === "") || v.reqStale) return "todo" as const;
   return "done" as const;
 }
 
@@ -24,10 +28,15 @@ export default function BudgetPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [template, setTemplate] = useState<File | null>(null); // hwpx 만들 때 서식으로 쓸 기존 설명서
-  const pendingExport = useRef<string[] | null>(null);
+  const pendingExport = useRef<{ names: string[] | null } | null>(null); // 서식을 고른 뒤 이어서 만들 대상
   const pdfRef = useRef<HTMLInputElement>(null), hwpxRef = useRef<HTMLInputElement>(null), jsonRef = useRef<HTMLInputElement>(null), tplRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => setStore(loadStore()), []);
+  useEffect(() => {
+    setStore(loadStore());
+    loadTemplate().then((f) => f && setTemplate((cur) => cur ?? f)); // 전에 쓴 서식 hwpx
+  }, []);
+  // 서식 hwpx 기억 (다음에 페이지를 열어도 다시 고르지 않도록)
+  const rememberTemplate = (f: File) => { setTemplate(f); saveTemplate(f); };
   const commit = (next: MasterStore) => { setStore(next); if (!saveStore(next)) setMsg({ kind: "err", text: "브라우저에 저장하지 못했습니다. 백업 파일로 내보내 두세요." }); };
 
   async function openPdf(f: File) {
@@ -47,16 +56,18 @@ export default function BudgetPage() {
     try {
       const { readDescriptionHwpx } = await import("@/lib/budget/loaders");
       const list = await readDescriptionHwpx(f);
-      setTemplate(f);
+      rememberTemplate(f);
+      // hwpx 파일이 저장된 시각을 기준으로, 이 사이트에서 그 뒤에 고친 사업은 덮어쓰지 않는다
+      const fileTime = new Date(f.lastModified || Date.now()).toISOString();
       const next = { ...store };
       let added = 0, kept = 0;
       for (const { titleName, ...m } of list) {
         const k = normName(m.name);
-        if (next[k]?.updatedAt && next[k].updatedAt > m.updatedAt) { kept++; continue; }
-        next[k] = m; added++;
+        if (next[k]?.updatedAt && next[k].updatedAt > fileTime) { kept++; continue; }
+        next[k] = { ...m, calcStyle: { ...next[k]?.calcStyle, ...m.calcStyle }, updatedAt: fileTime }; added++;
       }
       commit(next);
-      setMsg({ kind: "ok", text: `${f.name}에서 세부사업 ${list.length}개의 정보를 가져왔습니다.${kept ? ` (이미 더 최근에 고친 ${kept}개는 유지)` : ""}` });
+      setMsg({ kind: "ok", text: `${f.name}에서 세부사업 ${added}개의 정보를 가져왔습니다.${kept ? ` 이 파일보다 나중에 사이트에서 고친 ${kept}개는 고친 내용을 유지했습니다.` : ""}` });
     } catch (e: any) { setMsg({ kind: "err", text: e.message || "hwpx를 읽지 못했습니다." }); }
     finally { setBusy(null); }
   }
@@ -65,19 +76,20 @@ export default function BudgetPage() {
   async function exportHwpx(names: string[] | null, tpl: File | null = template) {
     if (!doc) return;
     const targets = names ? projects.filter((p) => names.includes(p.name)) : projects.filter((p) => !EXCLUDE.test(p.policy));
-    if (!tpl) { pendingExport.current = targets.map((p) => p.name); tplRef.current?.click(); return; }
+    if (!tpl) { pendingExport.current = { names }; tplRef.current?.click(); return; }
     setBusy("export"); setMsg(null);
     try {
       const { buildDescriptionHwpx } = await import("@/lib/budget/loaders");
       const year = doc.year ?? new Date().getFullYear() + 1;
-      const items = targets.map((p) => ({ p, m: store[normName(p.name)] ?? masters.get(p.name)?.info ?? null }));
+      const views = targets.map((p) => ({ p, v: viewOf(p) }));
+      const items = views.map(({ p, v }) => ({ p, m: v.m })); // 다른 연도 값은 빼고
       const blob = await buildDescriptionHwpx(tpl, items, year);
       const name = targets.length === 1 ? `세부사업설명서_${targets[0].name}.hwpx` : `세부사업설명서_${year}_${new Date().toISOString().slice(0, 10)}.hwpx`;
       const url = URL.createObjectURL(blob);
       const a = Object.assign(document.createElement("a"), { href: url, download: name.replace(/[\/:*?"<>|]/g, "_") });
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      const todo = items.filter(({ p, m }) => statusOf(p, m) !== "done").length;
+      const todo = views.filter(({ p, v }) => statusOf(p, v) !== "done").length;
       setMsg({ kind: "ok", text: `세부사업 ${items.length}개로 hwpx를 만들었습니다 (서식: ${tpl.name}).${todo ? ` 입력이 덜 된 ${todo}개 사업은 빈칸으로 들어갔습니다.` : ""}${names ? "" : " 행정운영경비는 뺐습니다."} 한글에서 열어 확인해 주세요.` });
     } catch (e: any) { setMsg({ kind: "err", text: e.message || "hwpx를 만들지 못했습니다." }); }
     finally { setBusy(null); }
@@ -95,13 +107,16 @@ export default function BudgetPage() {
   const masters = useMemo(() => new Map(projects.map((p) => [p.name, findMaster(store, p.name)])), [projects, store]);
   const current = projects.find((p) => p.name === sel) ?? null;
   const currentFound = current ? masters.get(current.name) ?? null : null;
+  const year = doc?.year ?? null;
+  // 이 PDF 연도에 써도 되는 정보 (다른 연도의 사업기간·전년도 재원·중기재정계획·비고는 비움)
+  const viewOf = (p: Project) => forYear(store[normName(p.name)] ?? masters.get(p.name)?.info ?? null, year);
 
   // 입력값 저장: 항상 PDF 사업명 기준 키로 저장 (비슷한 이름에서 가져온 정보도 이때 복사)
   function update(patch: Partial<MasterInfo>) {
     if (!current) return;
     const k = normName(current.name);
-    const base = store[k] ?? (currentFound ? { ...currentFound.info, name: current.name } : emptyMaster(current.name));
-    commit({ ...store, [k]: { ...base, ...patch, name: current.name, updatedAt: new Date().toISOString() } });
+    const raw = store[k] ?? (currentFound ? { ...currentFound.info, name: current.name } : emptyMaster(current.name));
+    commit({ ...store, [k]: { ...applyEdit(raw, patch, year), name: current.name } });
   }
 
   const filtered = projects.filter((p) => !q || normName(p.name).includes(normName(q)) || normName(p.unit).includes(normName(q)));
@@ -112,9 +127,9 @@ export default function BudgetPage() {
   }, [filtered]);
   const counts = useMemo(() => {
     const c = { done: 0, todo: 0, error: 0 };
-    for (const p of projects) c[statusOf(p, masters.get(p.name)?.info ?? null)]++;
+    for (const p of projects) c[statusOf(p, viewOf(p))]++;
     return c;
-  }, [projects, masters]);
+  }, [projects, masters, store, year]);
 
   return (
     <main className="shell">
@@ -137,7 +152,7 @@ export default function BudgetPage() {
           <button className="secondary" onClick={() => jsonRef.current?.click()}><Upload size={15} /> 백업 불러오기</button>
           <input ref={pdfRef} type="file" accept=".pdf,application/pdf" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) openPdf(f); e.target.value = ""; }} />
           <input ref={hwpxRef} type="file" accept=".hwpx" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importHwpx(f); e.target.value = ""; }} />
-          <input ref={tplRef} type="file" accept=".hwpx" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) { setTemplate(f); const names = pendingExport.current; pendingExport.current = null; exportHwpx(names, f); } }} />
+          <input ref={tplRef} type="file" accept=".hwpx" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) { rememberTemplate(f); const pending = pendingExport.current; pendingExport.current = null; if (pending) exportHwpx(pending.names, f); } }} />
           <input ref={jsonRef} type="file" accept=".json,application/json" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) importJson(f); e.target.value = ""; }} />
         </div>
         {doc && <p className="bhint">hwpx는 기존 설명서의 글자 모양·표 테두리를 서식으로 씁니다. {template ? <>서식: <b>{template.name}</b> <button type="button" className="linkbtn" onClick={() => tplRef.current?.click()}>바꾸기</button></> : "만들 때 서식으로 쓸 기존 설명서(hwpx)를 한 번 골라 주세요."}</p>}
@@ -161,7 +176,7 @@ export default function BudgetPage() {
                 <div key={g}>
                   <div className="budget-group">{g}</div>
                   {ps.map((p) => {
-                    const st = statusOf(p, masters.get(p.name)?.info ?? null);
+                    const st = statusOf(p, viewOf(p));
                     return (
                       <button key={p.name} className={`budget-item ${sel === p.name ? "active" : ""}`} onClick={() => setSel(p.name)}>
                         <span className={`dot ${st}`} title={st === "done" ? "입력 완료" : st === "todo" ? "입력 필요" : "합계 오류"} />
@@ -187,8 +202,8 @@ export default function BudgetPage() {
               </div>
               <ProjectNotices p={current} found={currentFound} hasOwn={!!store[normName(current.name)]} />
               {tab === "edit"
-                ? <DocView key={current.name} p={current} year={doc.year} m={store[normName(current.name)] ?? currentFound?.info ?? null} onChange={update} />
-                : <DocView p={current} year={doc.year} m={store[normName(current.name)] ?? currentFound?.info ?? null} />}
+                ? <DocView key={current.name} p={current} year={doc.year} view={viewOf(current)} onChange={update} />
+                : <DocView p={current} year={doc.year} view={viewOf(current)} />}
             </section>
           )}
         </div>
@@ -208,16 +223,6 @@ function ProjectNotices({ p, found, hasOwn }: { p: Project; found: { info: Maste
   );
 }
 
-/** 글 입력칸: 내용만큼 높이가 늘어나는 한 줄짜리 칸. need면 비었을 때 노란색 */
-function Txt({ value, onChange, placeholder, need }: { value: string; onChange: (v: string) => void; placeholder?: string; need?: boolean }) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
-  }, [value]);
-  return <textarea ref={ref} rows={1} className={`dtxt${need && !value.trim() ? " need" : ""}`} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />;
-}
-
 type Edit = ((patch: Partial<MasterInfo>) => void) | undefined;
 
 // 사업개요 항목 (입력 화면은 빈 항목도 모두 보여 준다)
@@ -233,8 +238,10 @@ const OV: { label: string; key: keyof MasterInfo; need?: boolean; placeholder?: 
 ];
 
 /** 세부사업설명서 문서 모양. onChange가 있으면 입력 화면, 없으면 미리보기 */
-function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m: MasterInfo | null; onChange?: Edit }) {
+function DocView({ p, year, view, onChange }: { p: Project; year: number | null; view: YearView; onChange?: Edit }) {
+  const { m, stale, reqStale } = view;
   const v = m ?? emptyMaster(p.name);
+  const old = (s: string | undefined) => (stale && s ? <span className="dold">{stale.year}년 값(참고): {s}</span> : null);
   const edit = !!onChange;
   const set = (patch: Partial<MasterInfo>) => onChange?.(patch);
   const y = year ?? new Date().getFullYear() + 1;
@@ -249,6 +256,7 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
 
   return (
     <div className={`bpreview${edit ? " editing" : ""}`}>
+      {stale && <div className="notice"><p>ⓘ 저장된 사업기간·전년도 재원별 금액·사전절차 날짜(중기재정계획 등)·※ 비고는 <b>{stale.year}년</b> 예산 값이라 이 문서({year}년)에는 쓰지 않고 비워 두었습니다. 회색 글씨의 작년 값을 참고해 다시 넣어 주세요.</p></div>}
       {edit && <p className="bhint">문서 모양 그대로 입력합니다. <span className="need-sample" /> 노란 칸은 꼭 채워야 하는 칸, 회색 숫자는 PDF에서 가져온 값입니다.</p>}
       <div className="bp-type">&lt;{edit ? <input className="dinline" value={v.type} placeholder="단년·반복사업" onChange={(e) => set({ type: e.target.value })} /> : v.type || "단년·반복사업"}&gt;</div>
       <div className="bp-title">{p.name}</div>
@@ -273,6 +281,7 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
                 : <div className="dcell">
                     <Txt value={val} need={o.need} placeholder={sug || o.placeholder} onChange={(x) => set({ [o.key]: x } as Partial<MasterInfo>)} />
                     {sug && o.key !== "period" && sug !== val && <button type="button" className="suggest" onClick={() => set({ [o.key]: sug } as Partial<MasterInfo>)} title={sug}><Wand2 size={12} /> 제안값 넣기: {sug}</button>}
+                    {o.key === "period" && old(stale?.period)}
                   </div>}
             </div>
           );
@@ -283,9 +292,22 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
 
       <h4>□ 사전절차이행여부</h4>
       <table className="bp-table"><tbody>
-        {[PREREQ_KEYS.slice(0, 3), PREREQ_KEYS.slice(3)].map((ks, i) => <tr key={i}>{ks.map((k) => (
-          <Fragment key={k}><th>{k}</th><td>{edit ? <input className="dcellin" value={v.prereq?.[k] ?? ""} placeholder="비대상" onChange={(e) => set({ prereq: { ...v.prereq, [k]: e.target.value } })} /> : v.prereq?.[k] || "비대상"}</td></Fragment>
-        ))}</tr>)}
+        {[PREREQ_KEYS.slice(0, 3), PREREQ_KEYS.slice(3)].map((ks, i) => <tr key={i}>{ks.map((k) => {
+          // 값이 없으면 "비대상". 단 중기재정계획과, 연도가 바뀌어 비운 날짜 칸("")은 꼭 입력
+          const val = v.prereq?.[k];
+          const must = k === MID_PLAN || val === "";
+          const was = stale?.prereq?.[k];
+          const change = (x: string) => {
+            const next = { ...v.prereq };
+            if (x === "" && !must) delete next[k]; else next[k] = x;
+            set({ prereq: next });
+          };
+          return (
+            <Fragment key={k}><th>{k}</th><td>{edit
+              ? <input className={`dcellin${must && !val ? " need" : ""}`} value={val ?? ""} placeholder={was ? `작년 ${was}` : must ? "날짜 입력" : "비대상"} title={was ? `${stale!.year}년 값: ${was}` : undefined} onChange={(e) => change(e.target.value)} />
+              : val || (must ? missing("입력 필요") : "비대상")}</td></Fragment>
+          );
+        })}</tr>)}
       </tbody></table>
 
       <h4>□ 투자계획 <small>(단위 : 백만원)</small></h4>
@@ -297,7 +319,7 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
             <tr key={r.label} className={r.label === "계" ? "sum" : ""}>
               <th>{r.label}</th><td>{r.a ?? ""}</td>
               <td>{bEditable
-                ? <input className={`dcellin num${(v.prevFunds?.[key] ?? "") === "" ? " need" : ""}`} value={v.prevFunds?.[key] ?? ""} placeholder="입력" onChange={(e) => set({ prevFunds: { ...v.prevFunds, [key]: e.target.value } })} />
+                ? <input className={`dcellin num${(v.prevFunds?.[key] ?? "") === "" ? " need" : ""}`} value={v.prevFunds?.[key] ?? ""} placeholder={stale?.prevFunds?.[key] ? `작년 ${stale.prevFunds[key]}` : "입력"} onChange={(e) => set({ prevFunds: { ...v.prevFunds, [key]: e.target.value } })} />
                 : r.b ?? (r.a !== null ? missing("입력") : "")}</td>
               <td>{r.c === null ? "" : r.c < 0 ? `△${-r.c}` : r.c}</td><td>{r.rate}</td><td>{r.note}</td>
             </tr>
@@ -307,6 +329,10 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
       {edit && multiFund && <p className="bhint">재원이 둘 이상이면 전년도 재원별 금액이 PDF에 없어 (b)칸을 직접 넣어야 합니다. 전년도 합계: {mil(p.prev ?? 0)}백만원</p>}
 
       <h4>□ 산출근거</h4>
+      {reqStale && (
+        <div className="notice"><p>ⓘ ▶(요구) 사유는 지난 예산 때 문구입니다. 올해에도 맞는지 확인하고, 고칠 곳은 고쳐 주세요.
+          {edit && <> <button type="button" className="suggest" onClick={() => set({ reqYear: year ?? undefined })}><CheckCircle2 size={12} /> 확인했음 (그대로 사용)</button></>}</p></div>
+      )}
       <div className="bp-box">
         {stats.map((s) => {
           const style = calcStyleOf(m, s.name);
@@ -315,7 +341,7 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
           return (
             <div key={s.code + s.name} className="bp-stat">
               <div className="bp-stat-head">○ {s.name} : {statChangeText(s)}</div>
-              <div className="bp-req">&nbsp;▶ (요구) {edit ? <Txt value={req} need placeholder="요구 사유" onChange={(x) => set({ requests: { ...v.requests, [sk]: x } })} /> : req || missing("입력 필요")}</div>
+              <div className="bp-req">&nbsp;▶ (요구) {edit ? <Txt value={req} need placeholder="요구 사유" stale={reqStale} onChange={(x) => set({ requests: { ...v.requests, [sk]: x } })} /> : req || missing("입력 필요")}</div>
               <div className="bp-calc-label">&nbsp;▶ (산출)
                 {edit && s.lines.length > 0 && (
                   <span className="seg" role="group" aria-label="산출근거 형식">
@@ -338,7 +364,7 @@ function DocView({ p, year, m, onChange }: { p: Project; year: number | null; m:
           );
         })}
         {edit
-          ? <div className="bp-req">※ 비고 <Txt value={v.notes} placeholder="※ 2027년도 예산 감액 사유: … (없으면 비워 두세요)" onChange={(x) => set({ notes: x })} /></div>
+          ? <div className="bp-req">※ 비고 <div className="dcell"><Txt value={v.notes} placeholder={`※ ${year ?? ""}년도 예산 감액 사유: … (없으면 비워 두세요)`} onChange={(x) => set({ notes: x })} />{old(stale?.notes)}</div></div>
           : v.notes && <pre className="bp-note">{v.notes}</pre>}
       </div>
       {!edit && <p className="bhint"><CheckCircle2 size={12} /> 미리보기는 내용 확인용입니다. 실제 모양은 &lsquo;이 사업만&rsquo;으로 hwpx를 만들어 한글에서 확인해 주세요.</p>}
