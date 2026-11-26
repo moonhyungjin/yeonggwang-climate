@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 30; // Vercel 함수 제한 시간(초): 기상청 재시도(최대 3 × 8초)를 담을 수 있게
+export const maxDuration = 60; // Vercel 함수 제한 시간(초): 기상청이 느린 날 재시도(최대 3 × 15초)를 담을 수 있게
 
 import { kma, dataLines, num, parseObs, STATION, BASELINE, type Obs } from "@/lib/kma";
 
@@ -84,8 +84,9 @@ export async function GET(req: NextRequest) {
     // 평년값은 1년치를 한 번에 받아 MM-DD로 매칭 (해를 넘기는 기간도 처리됨)
     const [obsRaw, normRaw, monthRaw] = await Promise.all([
       kma("kma_sfcdd3.php", { stn: STATION, tm1: ymd(start), tm2: ymd(end) }),
-      kma("sfc_norm1.php", { stn: STATION, norm: "D", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }),
-      kma("sfc_norm1.php", { stn: STATION, norm: "M", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }),
+      // 평년값(1991~2020)은 바뀌지 않으므로 하루 동안 다시 묻지 않는다
+      kma("sfc_norm1.php", { stn: STATION, norm: "D", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }, { cacheSeconds: 86400 }),
+      kma("sfc_norm1.php", { stn: STATION, norm: "M", tmst: BASELINE, MM1: "1", DD1: "1", MM2: "12", DD2: "31" }, { cacheSeconds: 86400 }),
     ]);
     const obs = parseObs(obsRaw);
     const norm = parseNormal(normRaw);
@@ -120,10 +121,11 @@ export async function GET(req: NextRequest) {
     if (norm.size === 0) warnings.push("평년값을 읽지 못했습니다.");
 
     // 강우일수: 관측은 일강수량 기준(결측일 제외), 평년은 월별 평년 일수 × (기간 내 그 달 일수 / 그 달 전체 일수)
-    const rainy = (min: number) => obs.size === 0 ? null : days.filter((d) => d.rain !== null && d.rain >= min).length;
-    const normalRainDays = (k: keyof RainDayNormal) => {
+    type Day = (typeof days)[number];
+    const rainy = (ds: Day[], min: number) => obs.size === 0 ? null : ds.filter((d) => d.rain !== null && d.rain >= min).length;
+    const normalRainDays = (ds: Day[], k: keyof RainDayNormal) => {
       let total = 0;
-      for (const d of days) {
+      for (const d of ds) {
         const y = Number(d.date.slice(0, 4)), m = Number(d.date.slice(5, 7));
         const v = monthRainDays.get(m)?.[k];
         if (v === null || v === undefined) return null;
@@ -133,20 +135,37 @@ export async function GET(req: NextRequest) {
     };
     if (monthRainDays.size === 0) warnings.push("월별 평년 강수일수를 읽지 못했습니다.");
 
+    // 기간 요약 (전체 기간과 달마다 같은 방식)
+    const summarize = (ds: Day[]) => ({
+      temp: avg(ds.map((d) => d.temp)), normalTemp: avg(ds.map((d) => d.normalTemp)),
+      tempMax: extreme(ds, (d) => d.tempMax, (d) => d.normalTempMax, "max"),
+      tempMin: extreme(ds, (d) => d.tempMin, (d) => d.normalTempMin, "min"),
+      rain: sum(ds.map((d) => d.rain)), normalRain: sum(ds.map((d) => d.normalRain)),
+      sunshine: sum(ds.map((d) => d.sunshine)), normalSunshine: sum(ds.map((d) => d.normalSunshine)),
+      rainDays01: rainy(ds, 0.1), normalRainDays01: normalRainDays(ds, "rd01"),
+      rainDays10: rainy(ds, 1.0), normalRainDays10: normalRainDays(ds, "rd10"),
+    });
+
+    // 달별: 기간이 그 달 전체를 덮지 않으면 full=false (평년값도 같은 날짜들로 계산하므로 비교는 공정)
+    const byMonth = new Map<string, Day[]>();
+    for (const d of days) { const k = d.date.slice(0, 7); byMonth.set(k, [...(byMonth.get(k) ?? []), d]); }
+    const months = [...byMonth.entries()].map(([month, ds]) => {
+      const [y, m] = month.split("-").map(Number);
+      const total = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      return {
+        month, from: ds[0].date, to: ds[ds.length - 1].date, days: ds.length, full: ds.length === total,
+        missingTemp: ds.filter((d) => d.temp === null).length,
+        ...summarize(ds),
+      };
+    });
+
     return NextResponse.json({
       station: "영광(252)",
       period: { start, end },
       baseline: "1991~2020",
       days,
-      summary: {
-        temp: avg(days.map((d) => d.temp)), normalTemp: avg(days.map((d) => d.normalTemp)),
-        tempMax: extreme(days, (d) => d.tempMax, (d) => d.normalTempMax, "max"),
-        tempMin: extreme(days, (d) => d.tempMin, (d) => d.normalTempMin, "min"),
-        rain: sum(days.map((d) => d.rain)), normalRain: sum(days.map((d) => d.normalRain)),
-        sunshine: sum(days.map((d) => d.sunshine)), normalSunshine: sum(days.map((d) => d.normalSunshine)),
-        rainDays01: rainy(0.1), normalRainDays01: normalRainDays("rd01"),
-        rainDays10: rainy(1.0), normalRainDays10: normalRainDays("rd10"),
-      },
+      summary: summarize(days),
+      months,
       missing,
       warnings,
     });

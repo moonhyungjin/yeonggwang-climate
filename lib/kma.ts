@@ -1,19 +1,25 @@
 const BASE = "https://apihub.kma.go.kr/api/typ01/url/";
 export const STATION = "252"; // 영광 ASOS
 export const BASELINE = "2021"; // 1991~2020 평년 (영광은 이전 평년값이 제공되지 않음)
-const TIMEOUT_MS = 8000;
+const TIMEOUT_MS = 15000; // 기상청이 느린 날은 정상 응답도 5~10초 걸린다. 너무 짧으면 정상 응답을 끊고 다시 받게 된다
 const MAX_ATTEMPTS = 3;
 
 export type Obs = { temp: number | null; tempMax: number | null; tempMin: number | null; rain: number | null; sunshine: number | null };
 
-export async function kma(path: string, params: Record<string, string>) {
+// 평년값처럼 바뀌지 않는 자료는 정상 응답을 서버 메모리에 잠시 둔다 (같은 서버 인스턴스 안에서만, 오류 응답은 저장 안 함)
+const memo = new Map<string, { at: number; body: string }>();
+
+export async function kma(path: string, params: Record<string, string>, opts: { cacheSeconds?: number } = {}) {
+  const memoKey = path + "?" + new URLSearchParams(params).toString();
+  const hit = opts.cacheSeconds ? memo.get(memoKey) : undefined;
+  if (hit && Date.now() - hit.at < opts.cacheSeconds! * 1000) return hit.body;
   const key = process.env.KMA_API_KEY;
   if (!key) throw new Error("서버 환경변수 KMA_API_KEY가 설정되지 않았습니다. .env.local에 API 키를 입력해 주세요.");
   const u = new URL(BASE + path);
   Object.entries({ ...params, help: "0", authKey: key }).forEach(([k, v]) => u.searchParams.set(k, v));
 
-  // 기상청 서버가 간헐적으로 30초간 멈춘 뒤 504를 준다. 정상 응답은 1초 안팎이므로
-  // 8초 안에 응답이 없거나 5xx면 다시 시도한다 (최대 3번).
+  // 기상청 서버가 간헐적으로 30초 넘게 멈추거나 504를 준다.
+  // 15초 안에 응답이 없거나 5xx면 다시 시도한다 (최대 3번).
   let lastError = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res: Response;
@@ -34,6 +40,7 @@ export async function kma(path: string, params: Record<string, string>) {
       try { msg = JSON.parse(body).result?.message ?? msg; } catch {}
       throw new Error(`기상청 API 오류 (${path}, ${res.status}): ${msg}`);
     }
+    if (opts.cacheSeconds) memo.set(memoKey, { at: Date.now(), body });
     return body;
   }
   throw new Error(`기상청 서버가 응답하지 않습니다 (${path}, ${MAX_ATTEMPTS}번 시도: ${lastError}). 잠시 후 다시 조회해 주세요.`);
